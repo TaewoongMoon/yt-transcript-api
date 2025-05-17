@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
 import os
+import time
 import logging
 
 # -------------------------------
@@ -86,10 +87,10 @@ def fetch_transcripts():
         return jsonify({"error": "채널 ID를 찾을 수 없습니다."}), 400
 
     video_ids = get_video_ids_from_channel(channel_id)
-    logging.info(f"총 영상 수: {len(video_ids)}개")
+    logging.info(f"총 영상 수: {len(video_ids)}개 (최대 10개 처리)")
 
     results = []
-    for vid in video_ids:
+    for i, vid in enumerate(video_ids[:10]):  # 최대 10개만 처리
         try:
             transcript = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
             text = " ".join([t["text"] for t in transcript])
@@ -97,11 +98,13 @@ def fetch_transcripts():
                 "video_url": f"https://youtu.be/{vid}",
                 "transcript": text
             })
+            logging.info(f"✅ 자막 수집 성공: {vid}")
+            time.sleep(1.5)  # YouTube 접근 제한 회피
         except Exception as e:
-            logging.warning(f"자막 수집 실패 (영상: {vid}): {e}")
+            logging.warning(f"⚠️ 자막 수집 실패 (영상: {vid}): {e}")
             continue
 
-    logging.info(f"자막 수집 완료: {len(results)}개")
+    logging.info(f"🎯 자막 수집 최종 완료: {len(results)}개")
     return jsonify(results)
 
 # -------------------------------
