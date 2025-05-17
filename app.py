@@ -6,22 +6,19 @@ import time
 import logging
 
 # -------------------------------
-# 1. 로깅 & Flask 앱 선언
+# 1. 기본 설정
 # -------------------------------
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# -------------------------------
-# 2. YouTube API 키 및 클라이언트 설정
-# -------------------------------
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 if not YOUTUBE_API_KEY:
-    raise ValueError("YOUTUBE_API_KEY is not set in environment variables")
+    raise ValueError("YOUTUBE_API_KEY is not set")
 
-youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
 # -------------------------------
-# 3. 채널 URL → 채널 ID 추출
+# 2. 채널 ID 추출
 # -------------------------------
 def get_channel_id_from_url(channel_url):
     try:
@@ -42,7 +39,7 @@ def get_channel_id_from_url(channel_url):
     return None
 
 # -------------------------------
-# 4. 채널 ID → 영상 ID 목록 추출
+# 3. 영상 ID 추출
 # -------------------------------
 def get_video_ids_from_channel(channel_id):
     videos = []
@@ -55,31 +52,29 @@ def get_video_ids_from_channel(channel_id):
             pageToken=next_page_token,
             type="video"
         ).execute()
-
         for item in res["items"]:
             videos.append(item["id"]["videoId"])
-
         next_page_token = res.get("nextPageToken")
         if not next_page_token or len(videos) >= 100:
             break
     return videos
 
 # -------------------------------
-# 5. 기본 라우트 (서버 확인용)
+# 4. 루트 경로 (확인용)
 # -------------------------------
 @app.route("/")
 def hello():
     return "Hello from transcript API!"
 
 # -------------------------------
-# 6. 핵심 기능 라우트: 자막 수집
+# 5. 핵심 기능: 자막 수집
 # -------------------------------
 @app.route("/fetch_transcripts", methods=["POST"])
 def fetch_transcripts():
     data = request.get_json()
     channel_url = data.get("channel_url")
 
-    logging.info(f"요청받은 채널 URL: {channel_url}")
+    logging.info(f"요청된 채널: {channel_url}")
     channel_id = get_channel_id_from_url(channel_url)
     logging.info(f"채널 ID: {channel_id}")
 
@@ -87,10 +82,17 @@ def fetch_transcripts():
         return jsonify({"error": "채널 ID를 찾을 수 없습니다."}), 400
 
     video_ids = get_video_ids_from_channel(channel_id)
-    logging.info(f"총 영상 수: {len(video_ids)}개 (최대 10개 처리)")
+    logging.info(f"총 영상 수: {len(video_ids)}개")
+
+    # 최적화 파라미터
+    MAX_VIDEOS = 5
+    REQUEST_DELAY = 2.5
+    MAX_FAILURES = 3
 
     results = []
-    for i, vid in enumerate(video_ids[:10]):  # 최대 10개만 처리
+    failure_count = 0
+
+    for i, vid in enumerate(video_ids[:MAX_VIDEOS]):
         try:
             transcript = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
             text = " ".join([t["text"] for t in transcript])
@@ -99,16 +101,21 @@ def fetch_transcripts():
                 "transcript": text
             })
             logging.info(f"✅ 자막 수집 성공: {vid}")
-            time.sleep(1.5)  # YouTube 접근 제한 회피
+            failure_count = 0
+            time.sleep(REQUEST_DELAY)
         except Exception as e:
-            logging.warning(f"⚠️ 자막 수집 실패 (영상: {vid}): {e}")
-            continue
+            failure_count += 1
+            logging.warning(f"⚠️ 자막 실패 {failure_count}/{MAX_FAILURES} (영상: {vid}) : {e}")
+            if failure_count >= MAX_FAILURES:
+                logging.warning("🚫 연속 실패로 자막 수집 중단")
+                break
+            time.sleep(REQUEST_DELAY)
 
-    logging.info(f"🎯 자막 수집 최종 완료: {len(results)}개")
+    logging.info(f"🎯 최종 자막 수집 결과: {len(results)}개")
     return jsonify(results)
 
 # -------------------------------
-# 7. 서버 실행 (Render 환경 변수 사용)
+# 6. 서버 실행
 # -------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
