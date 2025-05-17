@@ -1,29 +1,39 @@
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
-import requests
-import re
 import os
 
 app = Flask(__name__)
 
-# YouTube API 키 환경변수에서 가져오기
+# 환경변수에서 API 키 읽기
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+if not YOUTUBE_API_KEY:
+    raise ValueError("YOUTUBE_API_KEY is not set in environment variables")
+
+# 유튜브 API 클라이언트 생성
 youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
 def get_channel_id_from_url(channel_url):
-    if "@THE_freezia" in channel_url:
-        # 사용자명 기반 채널
-        username = channel_url.split("@")[1]
-        res = youtube.channels().list(forUsername=username, part='id').execute()
-        if res["items"]:
-            return res["items"][0]["id"]
-    elif "/channel/" in channel_url:
-        # 채널 ID 직접 포함된 경우
-        return channel_url.split("/channel/")[1].split("/")[0]
-    else:
-        # fallback (HTML에서 추출 시도, 비추천)
-        return None
+    try:
+        if "/channel/" in channel_url:
+            return channel_url.split("/channel/")[1].split("/")[0]
+
+        # @username 방식 처리
+        elif "youtube.com/@" in channel_url:
+            username = channel_url.split("youtube.com/@")[1].split("/")[0]
+            search_response = youtube.search().list(
+                part="snippet",
+                q=username,
+                type="channel",
+                maxResults=1
+            ).execute()
+
+            if search_response["items"]:
+                return search_response["items"][0]["snippet"]["channelId"]
+
+    except Exception as e:
+        print(f"[ERROR] 채널 ID 추출 실패: {e}")
+    return None
 
 def get_video_ids_from_channel(channel_id):
     videos = []
@@ -42,7 +52,7 @@ def get_video_ids_from_channel(channel_id):
             videos.append(item["id"]["videoId"])
 
         next_page_token = res.get("nextPageToken")
-        if not next_page_token or len(videos) > 100:
+        if not next_page_token or len(videos) >= 100:
             break
 
     return videos
@@ -53,15 +63,20 @@ def hello():
 
 @app.route("/fetch_transcripts", methods=["POST"])
 def fetch_transcripts():
-    channel_url = request.json.get("channel_url")
+    data = request.get_json()
+    channel_url = data.get("channel_url")
+
     channel_id = get_channel_id_from_url(channel_url)
+    print(f"[INFO] 채널 URL: {channel_url}")
+    print(f"[INFO] 채널 ID: {channel_id}")
 
     if not channel_id:
-        return jsonify({"error": "Invalid channel URL"}), 400
+        return jsonify({"error": "채널 ID를 찾을 수 없습니다."}), 400
 
     video_ids = get_video_ids_from_channel(channel_id)
-    results = []
+    print(f"[INFO] 영상 수: {len(video_ids)}개")
 
+    results = []
     for vid in video_ids:
         try:
             transcript = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
@@ -73,6 +88,7 @@ def fetch_transcripts():
         except:
             continue
 
+    print(f"[INFO] 자막 수집 완료: {len(results)}개")
     return jsonify(results)
 
 if __name__ == "__main__":
